@@ -9,13 +9,62 @@ dangerous fire, and it does not confirm that a fire is present.
 import numpy as np
 import pandas as pd
 
-# Change these later without rewriting the formulas.
+# Default weights (Balanced preset)
 WEIGHTS = {
     "recency": 0.30,
     "frp": 0.30,
     "persistence": 0.25,
     "size": 0.15,
 }
+
+# Analyst persona presets — transparent assumptions, not different models.
+PERSONAS = {
+    "Balanced": {
+        "recency": 0.30,
+        "frp": 0.30,
+        "persistence": 0.25,
+        "size": 0.15,
+    },
+    "Newest-first": {
+        "recency": 0.50,
+        "frp": 0.25,
+        "persistence": 0.15,
+        "size": 0.10,
+    },
+    "Most-intense": {
+        "recency": 0.20,
+        "frp": 0.50,
+        "persistence": 0.15,
+        "size": 0.15,
+    },
+    "Persistence-first": {
+        "recency": 0.15,
+        "frp": 0.20,
+        "persistence": 0.45,
+        "size": 0.20,
+    },
+}
+
+
+def normalize_weights(weights):
+    """
+    Ensure weights sum to 1.0.
+
+    Raises ValueError if weights are empty, all-zero, or have negative values.
+    """
+    if not weights:
+        raise ValueError("Weights dictionary cannot be empty.")
+
+    total = sum(float(w) for w in weights.values())
+    if total <= 0:
+        raise ValueError("Sum of weights must be positive.")
+
+    for k, v in weights.items():
+        if float(v) < 0:
+            raise ValueError(f"Weight for '{k}' cannot be negative.")
+
+    return {k: float(v) / total for k, v in weights.items()}
+
 
 # Placeholder columns until clustering is connected.
 PERSISTENCE_COLUMN = "persistence"
@@ -118,11 +167,14 @@ def add_priority_scores(df, weights=None):
     """
     Add factor scores, contributions, and a 0-100 priority_score.
 
+    Weights are automatically normalized to sum to 1.0.
     If persistence or observation_count is missing, each row is treated
     as a single observation (value = 1) until clustering is added.
     """
     if weights is None:
         weights = WEIGHTS
+    else:
+        weights = normalize_weights(weights)
 
     scored = df.copy()
 
@@ -153,3 +205,39 @@ def add_priority_scores(df, weights=None):
     )
 
     return scored
+
+
+def compute_persona_consensus(df, consensus_cutoff=25):
+    """
+    Evaluate whether items in the queue remain prioritized across all analyst
+    personas (Consensus) or depend on the chosen persona assumptions (Contested).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with observations or clusters.
+    consensus_cutoff : int
+        Max rank across all personas to qualify as consensus.
+
+    Returns
+    -------
+    pd.Series
+        'Consensus' or 'Contested' for each row.
+    """
+    if df.empty:
+        return pd.Series(dtype=str)
+
+    ranks = {}
+    for persona_name, persona_weights in PERSONAS.items():
+        scored_temp = add_priority_scores(df, weights=persona_weights)
+        ranks[persona_name] = scored_temp["priority_score"].rank(
+            ascending=False, method="min"
+        )
+
+    rank_df = pd.DataFrame(ranks, index=df.index)
+    max_rank = rank_df.max(axis=1)
+    rank_span = rank_df.max(axis=1) - rank_df.min(axis=1)
+
+    is_consensus = (max_rank <= consensus_cutoff) | (rank_span <= 10)
+    return is_consensus.map({True: "Consensus", False: "Contested"})
+
